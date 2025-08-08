@@ -84,6 +84,8 @@ class FuelStorage extends Model
         return $this->todayDirectTransactions()->sum('fuel_amount') ?? 0;
     }
 
+   // Tambahkan method ini ke FuelStorage model (menggantikan yang lama)
+
     // IMPROVED: Stock Management with better validation and logging
     public function addFuel(float $amount, string $notes = null): bool
     {
@@ -94,6 +96,9 @@ class FuelStorage extends Model
             ]);
             return false;
         }
+
+        // Refresh model to get latest data
+        $this->refresh();
 
         if (($this->current_level + $amount) > $this->capacity) {
             Log::error('Storage capacity exceeded', [
@@ -107,17 +112,22 @@ class FuelStorage extends Model
         }
 
         $oldLevel = $this->current_level;
-        $this->increment('current_level', $amount);
+        $newLevel = $oldLevel + $amount;
         
-        Log::info('Fuel added to storage', [
-            'storage_code' => $this->storage_code,
-            'amount_added' => $amount,
-            'old_level' => $oldLevel,
-            'new_level' => $this->current_level,
-            'notes' => $notes
-        ]);
+        // Use update instead of increment to ensure consistency
+        $updated = $this->update(['current_level' => $newLevel]);
         
-        return true;
+        if ($updated) {
+            Log::info('Fuel added to storage', [
+                'storage_code' => $this->storage_code,
+                'amount_added' => $amount,
+                'old_level' => $oldLevel,
+                'new_level' => $newLevel,
+                'notes' => $notes
+            ]);
+        }
+        
+        return $updated;
     }
 
     public function removeFuel(float $amount, string $notes = null): bool
@@ -130,6 +140,9 @@ class FuelStorage extends Model
             return false;
         }
 
+        // Refresh model to get latest data
+        $this->refresh();
+
         if ($this->current_level < $amount) {
             Log::error('Insufficient fuel for removal', [
                 'storage_code' => $this->storage_code,
@@ -141,17 +154,22 @@ class FuelStorage extends Model
         }
 
         $oldLevel = $this->current_level;
-        $this->decrement('current_level', $amount);
+        $newLevel = $oldLevel - $amount;
         
-        Log::info('Fuel removed from storage', [
-            'storage_code' => $this->storage_code,
-            'amount_removed' => $amount,
-            'old_level' => $oldLevel,
-            'new_level' => $this->current_level,
-            'notes' => $notes
-        ]);
+        // Use update instead of decrement to ensure consistency
+        $updated = $this->update(['current_level' => max(0, $newLevel)]);
         
-        return true;
+        if ($updated) {
+            Log::info('Fuel removed from storage', [
+                'storage_code' => $this->storage_code,
+                'amount_removed' => $amount,
+                'old_level' => $oldLevel,
+                'new_level' => $this->current_level,
+                'notes' => $notes
+            ]);
+        }
+        
+        return $updated;
     }
 
     public function updateLevel(float $newLevel): bool
@@ -166,16 +184,24 @@ class FuelStorage extends Model
         }
 
         $oldLevel = $this->current_level;
-        $this->update(['current_level' => $newLevel]);
+        $updated = $this->update(['current_level' => $newLevel]);
         
-        Log::info('Storage level manually updated', [
-            'storage_code' => $this->storage_code,
-            'old_level' => $oldLevel,
-            'new_level' => $newLevel,
-            'difference' => $newLevel - $oldLevel
-        ]);
+        if ($updated) {
+            Log::info('Storage level manually updated', [
+                'storage_code' => $this->storage_code,
+                'old_level' => $oldLevel,
+                'new_level' => $newLevel,
+                'difference' => $newLevel - $oldLevel
+            ]);
+        }
         
-        return true;
+        return $updated;
+    }
+
+    // Tambah method untuk debugging
+    public function getCurrentLevelFresh(): float
+    {
+        return $this->fresh()->current_level;
     }
 
     // Analysis Methods

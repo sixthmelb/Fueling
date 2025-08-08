@@ -86,6 +86,7 @@ class FuelTruck extends Model
     {
         return $this->todayDistributions()->sum('fuel_amount') ?? 0;
     }
+// Tambahkan method ini ke FuelTruck model (menggantikan yang lama)
 
     // IMPROVED: Stock Management with better validation and logging
     public function addFuel(float $amount, string $notes = null): bool
@@ -97,6 +98,9 @@ class FuelTruck extends Model
             ]);
             return false;
         }
+
+        // Refresh model to get latest data
+        $this->refresh();
 
         if (($this->current_level + $amount) > $this->capacity) {
             Log::error('Truck capacity exceeded', [
@@ -110,17 +114,22 @@ class FuelTruck extends Model
         }
 
         $oldLevel = $this->current_level;
-        $this->increment('current_level', $amount);
+        $newLevel = $oldLevel + $amount;
         
-        Log::info('Fuel added to truck', [
-            'truck_code' => $this->truck_code,
-            'amount_added' => $amount,
-            'old_level' => $oldLevel,
-            'new_level' => $this->current_level,
-            'notes' => $notes
-        ]);
+        // Use update instead of increment to ensure consistency
+        $updated = $this->update(['current_level' => $newLevel]);
         
-        return true;
+        if ($updated) {
+            Log::info('Fuel added to truck', [
+                'truck_code' => $this->truck_code,
+                'amount_added' => $amount,
+                'old_level' => $oldLevel,
+                'new_level' => $newLevel,
+                'notes' => $notes
+            ]);
+        }
+        
+        return $updated;
     }
 
     public function removeFuel(float $amount, string $notes = null): bool
@@ -133,6 +142,9 @@ class FuelTruck extends Model
             return false;
         }
 
+        // Refresh model to get latest data
+        $this->refresh();
+
         if ($this->current_level < $amount) {
             Log::error('Insufficient fuel for removal', [
                 'truck_code' => $this->truck_code,
@@ -144,17 +156,22 @@ class FuelTruck extends Model
         }
 
         $oldLevel = $this->current_level;
-        $this->decrement('current_level', $amount);
+        $newLevel = $oldLevel - $amount;
         
-        Log::info('Fuel removed from truck', [
-            'truck_code' => $this->truck_code,
-            'amount_removed' => $amount,
-            'old_level' => $oldLevel,
-            'new_level' => $this->current_level,
-            'notes' => $notes
-        ]);
+        // Use update instead of decrement to ensure consistency
+        $updated = $this->update(['current_level' => max(0, $newLevel)]);
         
-        return true;
+        if ($updated) {
+            Log::info('Fuel removed from truck', [
+                'truck_code' => $this->truck_code,
+                'amount_removed' => $amount,
+                'old_level' => $oldLevel,
+                'new_level' => $this->current_level,
+                'notes' => $notes
+            ]);
+        }
+        
+        return $updated;
     }
 
     public function updateLevel(float $newLevel): bool
@@ -169,16 +186,24 @@ class FuelTruck extends Model
         }
 
         $oldLevel = $this->current_level;
-        $this->update(['current_level' => $newLevel]);
+        $updated = $this->update(['current_level' => $newLevel]);
         
-        Log::info('Truck level manually updated', [
-            'truck_code' => $this->truck_code,
-            'old_level' => $oldLevel,
-            'new_level' => $newLevel,
-            'difference' => $newLevel - $oldLevel
-        ]);
+        if ($updated) {
+            Log::info('Truck level manually updated', [
+                'truck_code' => $this->truck_code,
+                'old_level' => $oldLevel,
+                'new_level' => $newLevel,
+                'difference' => $newLevel - $oldLevel
+            ]);
+        }
         
-        return true;
+        return $updated;
+    }
+
+    // Tambah method untuk debugging
+    public function getCurrentLevelFresh(): float
+    {
+        return $this->fresh()->current_level;
     }
 
     // Analysis Methods

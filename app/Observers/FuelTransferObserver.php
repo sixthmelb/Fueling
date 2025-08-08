@@ -1,11 +1,5 @@
 <?php
 
-// ============================================================================
-// FIXED: app/Observers/FuelTransferObserver.php
-// Problem: Logic error dalam updated() method
-// Solution: Fix validation dan update logic
-// ============================================================================
-
 namespace App\Observers;
 
 use App\Models\FuelTransfer;
@@ -24,14 +18,24 @@ class FuelTransferObserver
             $fuelTransfer->transfer_number = $fuelTransfer->generateTransferNumber();
         }
         
-        // Set before levels
+        // Set before levels from current state
         if ($fuelTransfer->fuelStorage) {
+            // Refresh model to get latest data
+            $fuelTransfer->fuelStorage->refresh();
             $fuelTransfer->storage_level_before = $fuelTransfer->fuelStorage->current_level;
         }
         
         if ($fuelTransfer->fuelTruck) {
+            // Refresh model to get latest data
+            $fuelTransfer->fuelTruck->refresh();
             $fuelTransfer->truck_level_before = $fuelTransfer->fuelTruck->current_level;
         }
+        
+        Log::info('FuelTransfer creating', [
+            'storage_before' => $fuelTransfer->storage_level_before,
+            'truck_before' => $fuelTransfer->truck_level_before,
+            'amount' => $fuelTransfer->transferred_amount
+        ]);
     }
 
     /**
@@ -41,29 +45,70 @@ class FuelTransferObserver
     {
         DB::transaction(function () use ($fuelTransfer) {
             try {
-                // Validate transfer before processing
+                Log::info('Processing fuel transfer creation', [
+                    'transfer_id' => $fuelTransfer->id,
+                    'amount' => $fuelTransfer->transferred_amount,
+                    'storage_id' => $fuelTransfer->fuel_storage_id,
+                    'truck_id' => $fuelTransfer->fuel_truck_id
+                ]);
+
+                // 1. Validate transfer
                 $this->validateTransfer($fuelTransfer);
                 
-                // 1. Update storage level (decrease)
-                $this->updateStorageLevel($fuelTransfer);
+                // 2. Get fresh instances to avoid stale data
+                $storage = $fuelTransfer->fuelStorage()->lockForUpdate()->first();
+                $truck = $fuelTransfer->fuelTruck()->lockForUpdate()->first();
                 
-                // 2. Update truck level (increase)
-                $this->updateTruckLevel($fuelTransfer);
+                if (!$storage || !$truck) {
+                    throw new \Exception('Storage or truck not found');
+                }
                 
-                // 3. Update after levels in transfer record
-                $this->updateAfterLevels($fuelTransfer);
+                $amount = $fuelTransfer->transferred_amount;
+                
+                Log::info('Current levels before transfer', [
+                    'storage_current' => $storage->current_level,
+                    'truck_current' => $truck->current_level,
+                    'transfer_amount' => $amount
+                ]);
+                
+                // 3. Update storage level (decrease)
+                $oldStorageLevel = $storage->current_level;
+                $newStorageLevel = $oldStorageLevel - $amount;
+                
+                if ($newStorageLevel < 0) {
+                    throw new \Exception("Insufficient fuel in storage. Available: {$oldStorageLevel}L, Required: {$amount}L");
+                }
+                
+                $storage->update(['current_level' => $newStorageLevel]);
+                
+                // 4. Update truck level (increase)
+                $oldTruckLevel = $truck->current_level;
+                $newTruckLevel = $oldTruckLevel + $amount;
+                
+                if ($newTruckLevel > $truck->capacity) {
+                    throw new \Exception("Truck capacity exceeded. Capacity: {$truck->capacity}L, Would be: {$newTruckLevel}L");
+                }
+                
+                $truck->update(['current_level' => $newTruckLevel]);
+                
+                // 5. Update transfer record with actual after levels
+                $fuelTransfer->update([
+                    'storage_level_after' => $newStorageLevel,
+                    'truck_level_after' => $newTruckLevel
+                ]);
                 
                 Log::info('Fuel transfer processed successfully', [
                     'transfer_id' => $fuelTransfer->id,
-                    'storage' => $fuelTransfer->fuelStorage->storage_code,
-                    'truck' => $fuelTransfer->fuelTruck->truck_code,
-                    'amount' => $fuelTransfer->transferred_amount
+                    'storage_change' => $oldStorageLevel . ' → ' . $newStorageLevel,
+                    'truck_change' => $oldTruckLevel . ' → ' . $newTruckLevel,
+                    'amount' => $amount
                 ]);
                 
             } catch (\Exception $e) {
                 Log::error('Error processing fuel transfer', [
                     'transfer_id' => $fuelTransfer->id,
-                    'error' => $e->getMessage()
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString()
                 ]);
                 
                 throw $e; // Re-throw to rollback transaction
@@ -72,7 +117,7 @@ class FuelTransferObserver
     }
 
     /**
-     * FIXED: Handle the FuelTransfer "updated" event.
+     * Handle the FuelTransfer "updated" event.
      */
     public function updated(FuelTransfer $fuelTransfer): void
     {
@@ -83,7 +128,6 @@ class FuelTransferObserver
 
         DB::transaction(function () use ($fuelTransfer) {
             try {
-                // Get original amount dan new amount
                 $originalAmount = $fuelTransfer->getOriginal('transferred_amount');
                 $newAmount = $fuelTransfer->transferred_amount;
                 $difference = $newAmount - $originalAmount;
@@ -95,59 +139,41 @@ class FuelTransferObserver
                     'difference' => $difference
                 ]);
                 
-                $storage = $fuelTransfer->fuelStorage;
-                $truck = $fuelTransfer->fuelTruck;
+                // Get fresh instances with locks
+                $storage = $fuelTransfer->fuelStorage()->lockForUpdate()->first();
+                $truck = $fuelTransfer->fuelTruck()->lockForUpdate()->first();
                 
-                // FIXED: Validate new total amount, bukan difference saja
-                if ($difference > 0) {
-                    // Increasing transfer amount - need to check if storage has enough fuel
-                    if ($storage->current_level < $difference) {
-                        throw new \Exception("Insufficient fuel in storage for updated transfer amount. Available: {$storage->current_level}L, Additional needed: {$difference}L");
-                    }
-                    
-                    // Check if truck has capacity for additional fuel
-                    if ($truck->getRemainingCapacity() < $difference) {
-                        throw new \Exception("Truck capacity exceeded for updated transfer amount. Available capacity: {$truck->getRemainingCapacity()}L, Additional needed: {$difference}L");
-                    }
-                } else if ($difference < 0) {
-                    // Decreasing transfer amount - need to check if truck has enough fuel to remove
-                    $amountToRemove = abs($difference);
-                    if ($truck->current_level < $amountToRemove) {
-                        throw new \Exception("Insufficient fuel in truck to reduce transfer amount. Available: {$truck->current_level}L, Needed to remove: {$amountToRemove}L");
-                    }
+                // Calculate what the levels should be after the original transfer
+                $expectedStorageLevel = $fuelTransfer->storage_level_before - $originalAmount;
+                $expectedTruckLevel = $fuelTransfer->truck_level_before + $originalAmount;
+                
+                // Apply the difference
+                $newStorageLevel = $expectedStorageLevel - $difference;
+                $newTruckLevel = $expectedTruckLevel + $difference;
+                
+                // Validate new levels
+                if ($newStorageLevel < 0) {
+                    throw new \Exception("Insufficient fuel in storage for updated amount. Would be: {$newStorageLevel}L");
                 }
                 
-                // Update storage level
-                if ($difference > 0) {
-                    // Remove more fuel from storage
-                    if (!$storage->removeFuel($difference)) {
-                        throw new \Exception("Failed to remove additional fuel from storage");
-                    }
-                } else if ($difference < 0) {
-                    // Add fuel back to storage
-                    $storage->addFuel(abs($difference));
+                if ($newTruckLevel > $truck->capacity) {
+                    throw new \Exception("Truck capacity exceeded for updated amount. Would be: {$newTruckLevel}L, Capacity: {$truck->capacity}L");
                 }
                 
-                // Update truck level
-                if ($difference > 0) {
-                    // Add more fuel to truck
-                    if (!$truck->addFuel($difference)) {
-                        throw new \Exception("Failed to add additional fuel to truck");
-                    }
-                } else if ($difference < 0) {
-                    // Remove fuel from truck
-                    if (!$truck->removeFuel(abs($difference))) {
-                        throw new \Exception("Failed to remove fuel from truck");
-                    }
-                }
+                // Update levels
+                $storage->update(['current_level' => $newStorageLevel]);
+                $truck->update(['current_level' => $newTruckLevel]);
                 
-                // Update after levels in transfer record
-                $this->updateAfterLevels($fuelTransfer);
+                // Update transfer record
+                $fuelTransfer->update([
+                    'storage_level_after' => $newStorageLevel,
+                    'truck_level_after' => $newTruckLevel
+                ]);
                 
                 Log::info('Transfer update processed successfully', [
                     'transfer_id' => $fuelTransfer->id,
-                    'storage_final_level' => $storage->current_level,
-                    'truck_final_level' => $truck->current_level
+                    'storage_final' => $newStorageLevel,
+                    'truck_final' => $newTruckLevel
                 ]);
                 
             } catch (\Exception $e) {
@@ -168,16 +194,26 @@ class FuelTransferObserver
     {
         DB::transaction(function () use ($fuelTransfer) {
             try {
-                // Rollback storage level (add fuel back)
-                $fuelTransfer->fuelStorage->addFuel($fuelTransfer->transferred_amount);
-                
-                // Rollback truck level (remove fuel)
-                $fuelTransfer->fuelTruck->removeFuel($fuelTransfer->transferred_amount);
-                
-                Log::info('Fuel transfer deleted and rolled back', [
+                Log::info('Processing transfer deletion', [
                     'transfer_id' => $fuelTransfer->id,
-                    'amount_restored' => $fuelTransfer->transferred_amount
+                    'amount_to_rollback' => $fuelTransfer->transferred_amount
                 ]);
+                
+                // Get fresh instances
+                $storage = \App\Models\FuelStorage::lockForUpdate()->find($fuelTransfer->fuel_storage_id);
+                $truck = \App\Models\FuelTruck::lockForUpdate()->find($fuelTransfer->fuel_truck_id);
+                
+                if ($storage && $truck) {
+                    // Rollback: add fuel back to storage, remove from truck
+                    $storage->increment('current_level', $fuelTransfer->transferred_amount);
+                    $truck->decrement('current_level', $fuelTransfer->transferred_amount);
+                    
+                    Log::info('Transfer deletion rollback completed', [
+                        'transfer_id' => $fuelTransfer->id,
+                        'storage_new_level' => $storage->fresh()->current_level,
+                        'truck_new_level' => $truck->fresh()->current_level
+                    ]);
+                }
                 
             } catch (\Exception $e) {
                 Log::error('Error rolling back fuel transfer', [
@@ -191,7 +227,7 @@ class FuelTransferObserver
     }
 
     /**
-     * IMPROVED: Validate transfer before processing
+     * Validate transfer before processing
      */
     private function validateTransfer(FuelTransfer $fuelTransfer): void
     {
@@ -210,18 +246,9 @@ class FuelTransferObserver
         }
 
         // Validate truck has sufficient capacity
-        $availableCapacity = $truck->getRemainingCapacity();
+        $availableCapacity = $truck->capacity - $truck->current_level;
         if ($availableCapacity < $amount) {
             throw new \Exception("Insufficient truck capacity in {$truck->truck_code}. Available: {$availableCapacity}L, Required: {$amount}L");
-        }
-
-        // Validate fuel types match (if specified)
-        if ($storage->fuel_type !== $truck->fuel_type) {
-            Log::warning('Fuel type mismatch in transfer', [
-                'storage_type' => $storage->fuel_type,
-                'truck_type' => $truck->fuel_type,
-                'transfer_id' => $fuelTransfer->id
-            ]);
         }
 
         // Check if truck is active
@@ -233,94 +260,32 @@ class FuelTransferObserver
         if (!$storage->is_active) {
             throw new \Exception("Cannot transfer from inactive storage {$storage->storage_code}");
         }
-    }
 
-    /**
-     * Update storage fuel level (decrease)
-     */
-    private function updateStorageLevel(FuelTransfer $fuelTransfer): void
-    {
-        $storage = $fuelTransfer->fuelStorage;
-        $amount = $fuelTransfer->transferred_amount;
-
-        $success = $storage->removeFuel($amount, "Transfer to {$fuelTransfer->fuelTruck->truck_code}");
-        
-        if (!$success) {
-            throw new \Exception("Failed to update storage level for {$storage->storage_code}");
-        }
-
-        // Check for low level warning
-        if ($storage->isLowLevel()) {
-            Log::warning('Storage low level after transfer', [
-                'storage_code' => $storage->storage_code,
-                'current_level' => $storage->current_level,
-                'minimum_level' => $storage->minimum_level
+        // Validate fuel types match
+        if ($storage->fuel_type !== $truck->fuel_type) {
+            Log::warning('Fuel type mismatch in transfer', [
+                'storage_type' => $storage->fuel_type,
+                'truck_type' => $truck->fuel_type,
+                'transfer_id' => $fuelTransfer->id
             ]);
         }
     }
 
     /**
-     * Update truck fuel level (increase)
-     */
-    private function updateTruckLevel(FuelTransfer $fuelTransfer): void
-    {
-        $truck = $fuelTransfer->fuelTruck;
-        $amount = $fuelTransfer->transferred_amount;
-
-        $success = $truck->addFuel($amount, "Transfer from {$fuelTransfer->fuelStorage->storage_code}");
-        
-        if (!$success) {
-            throw new \Exception("Failed to update truck level for {$truck->truck_code}");
-        }
-    }
-
-    /**
-     * Update after levels in the transfer record
-     */
-    private function updateAfterLevels(FuelTransfer $fuelTransfer): void
-    {
-        $fuelTransfer->storage_level_after = $fuelTransfer->fuelStorage->current_level;
-        $fuelTransfer->truck_level_after = $fuelTransfer->fuelTruck->current_level;
-        $fuelTransfer->save();
-    }
-
-    /**
-     * IMPROVED: Handle the FuelTransfer "saving" event.
+     * Handle the FuelTransfer "saving" event.
      */
     public function saving(FuelTransfer $fuelTransfer): void
     {
-        // Skip validation for updates (handled in updated event)
-        if ($fuelTransfer->exists) {
-            return;
-        }
-
-        // Pre-validation before saving
+        // Basic validation
         if ($fuelTransfer->transferred_amount <= 0) {
             throw new \Exception("Transfer amount must be greater than 0");
         }
 
-        // Validate before levels match current levels (with some tolerance)
-        if ($fuelTransfer->fuelStorage) {
-            $storageLevelDiff = abs($fuelTransfer->storage_level_before - $fuelTransfer->fuelStorage->current_level);
-            if ($storageLevelDiff > 0.01) {
-                Log::warning('Storage level mismatch before transfer', [
-                    'recorded_before' => $fuelTransfer->storage_level_before,
-                    'actual_current' => $fuelTransfer->fuelStorage->current_level,
-                    'storage_code' => $fuelTransfer->fuelStorage->storage_code,
-                    'difference' => $storageLevelDiff
-                ]);
-            }
-        }
-
-        if ($fuelTransfer->fuelTruck) {
-            $truckLevelDiff = abs($fuelTransfer->truck_level_before - $fuelTransfer->fuelTruck->current_level);
-            if ($truckLevelDiff > 0.01) {
-                Log::warning('Truck level mismatch before transfer', [
-                    'recorded_before' => $fuelTransfer->truck_level_before,
-                    'actual_current' => $fuelTransfer->fuelTruck->current_level,
-                    'truck_code' => $fuelTransfer->fuelTruck->truck_code,
-                    'difference' => $truckLevelDiff
-                ]);
+        // Only validate on create, not update (to avoid circular validation)
+        if (!$fuelTransfer->exists) {
+            // Pre-validate before saving
+            if ($fuelTransfer->fuelStorage && $fuelTransfer->fuelTruck) {
+                $this->validateTransfer($fuelTransfer);
             }
         }
     }
