@@ -41,10 +41,10 @@ return new class extends Migration
             
             $table->timestamps();
             
-            // Indexes
-            $table->unique(['unit_id', 'summary_date', 'shift_id']);
-            $table->index(['unit_id', 'summary_date']);
-            $table->index(['summary_date', 'period_type']);
+            // MYSQL FIX: Custom shorter index names
+            $table->unique(['unit_id', 'summary_date', 'shift_id'], 'idx_ucs_unit_date_shift');
+            $table->index(['unit_id', 'summary_date'], 'idx_ucs_unit_date');
+            $table->index(['summary_date', 'period_type'], 'idx_ucs_date_period');
         });
     }
 

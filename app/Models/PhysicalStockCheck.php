@@ -10,14 +10,17 @@ class PhysicalStockCheck extends Model
 {
     use HasFactory;
 
-    protected $fillable = [
+     protected $fillable = [
         'check_number',
         'checkable_type',
         'checkable_id',
         'check_date',
         'check_time',
+        'check_datetime',         // Tambahkan ini jika pakai solusi 2
         'system_level',
         'physical_level',
+        'variance',              // Tambahkan ini jika pakai solusi 2
+        'variance_percentage',   // Tambahkan ini jika pakai solusi 2
         'checker_name',
         'check_method',
         'variance_status',
@@ -239,10 +242,59 @@ class PhysicalStockCheck extends Model
         return $this->getVariance();
     }
 
-    public function getVariancePercentAttribute(): float
+    /**
+     * MYSQL FIX: Accessor with fallback
+     */
+    public function getVarianceAttribute($value): float
     {
-        return $this->getVariancePercentage();
+        if ($value !== null) {
+            return $value;
+        }
+        return $this->physical_level - $this->system_level;
     }
+
+    /**
+     * MYSQL FIX: Accessor with fallback
+     */
+    public function getVariancePercentageAttribute($value): float
+    {
+        if ($value !== null) {
+            return $value;
+        }
+        
+        if ($this->system_level == 0) {
+            return 0;
+        }
+        return ($this->variance / $this->system_level) * 100;
+    }
+
+    /**
+     * MYSQL FIX: Accessor with fallback
+     */
+    public function getCheckDatetimeAttribute($value): string
+    {
+        if ($value !== null) {
+            return $value;
+        }
+        return $this->check_date . ' ' . $this->check_time;
+    }
+
+    /**
+     * Keep existing getVariance() method for backward compatibility
+     */
+    public function getVariance(): float
+    {
+        return $this->variance;
+    }
+
+    /**
+     * Keep existing getVariancePercentage() method for backward compatibility
+     */
+    public function getVariancePercentage(): float
+    {
+        return $this->variance_percentage;
+    }
+    
 
     public function getStatusColorAttribute(): string
     {

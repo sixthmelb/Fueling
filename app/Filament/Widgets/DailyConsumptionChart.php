@@ -60,67 +60,34 @@ class DailyConsumptionChart extends ChartWidget
                 'start' => now()->startOfDay(),
                 'end' => now()->endOfDay()
             ]
-            };
+        };
     }
     
     /**
-     * Get database-specific hour extraction query
+     * MYSQL FIX: Simplified hour extraction for MySQL compatibility
      */
     protected function getHourQuery($columnName = 'transaction_datetime'): string
     {
-        $connection = config('database.default');
-        $driver = config("database.connections.{$connection}.driver");
-        
-        switch ($driver) {
-            case 'mysql':
-                return "HOUR({$columnName})";
-            case 'sqlite':
-                return "CAST(strftime('%H', {$columnName}) AS INTEGER)";
-            case 'pgsql':
-                return "EXTRACT(hour FROM {$columnName})";
-            default:
-                return "CAST(strftime('%H', {$columnName}) AS INTEGER)";
-        }
+        // MySQL specific hour extraction
+        return "HOUR({$columnName})";
     }
     
     /**
-     * Get database-specific date extraction query
+     * MYSQL FIX: Simplified date extraction for MySQL compatibility
      */
     protected function getDateQuery($columnName = 'transaction_datetime'): string
     {
-        $connection = config('database.default');
-        $driver = config("database.connections.{$connection}.driver");
-        
-        switch ($driver) {
-            case 'mysql':
-                return "DATE({$columnName})";
-            case 'sqlite':
-                return "DATE({$columnName})";
-            case 'pgsql':
-                return "DATE({$columnName})";
-            default:
-                return "DATE({$columnName})";
-        }
+        // MySQL specific date extraction
+        return "DATE({$columnName})";
     }
     
     /**
-     * Get database-specific week extraction query
+     * MYSQL FIX: Use WEEK function for MySQL
      */
     protected function getWeekQuery($columnName = 'transaction_datetime'): string
     {
-        $connection = config('database.default');
-        $driver = config("database.connections.{$connection}.driver");
-        
-        switch ($driver) {
-            case 'mysql':
-                return "WEEK({$columnName}, 1)";
-            case 'sqlite':
-                return "CAST(strftime('%W', {$columnName}) AS INTEGER)";
-            case 'pgsql':
-                return "EXTRACT(week FROM {$columnName})";
-            default:
-                return "CAST(strftime('%W', {$columnName}) AS INTEGER)";
-        }
+        // MySQL specific week extraction
+        return "WEEK({$columnName}, 1)";
     }
     
     protected function getTodayHourlyData(): array

@@ -18,6 +18,8 @@ class VarianceReport extends Model
         'period_end',
         'total_system_fuel',
         'total_physical_fuel',
+        'total_variance',         // Tambahkan ini jika pakai solusi 2
+        'total_variance_percentage', // Tambahkan ini jika pakai solusi 2
         'storage_variance',
         'truck_variance',
         'total_checks_performed',
@@ -243,6 +245,52 @@ class VarianceReport extends Model
     }
 
     // Analysis Methods
+       /**
+     * MYSQL FIX: Calculate total variance since we removed computed column
+     */
+   /**
+     * MYSQL FIX: Accessor with fallback
+     */
+    public function getTotalVarianceAttribute($value): float
+    {
+        if ($value !== null) {
+            return $value;
+        }
+        return $this->total_physical_fuel - $this->total_system_fuel;
+    }
+
+    /**
+     * MYSQL FIX: Accessor with fallback
+     */
+    public function getTotalVariancePercentageAttribute($value): float
+    {
+        if ($value !== null) {
+            return $value;
+        }
+        
+        if ($this->total_system_fuel == 0) {
+            return 0;
+        }
+        return ($this->total_variance / $this->total_system_fuel) * 100;
+    }
+
+
+    /**
+     * Keep existing getTotalVariance() method for backward compatibility
+     */
+    public function getTotalVariance(): float
+    {
+        return $this->total_variance;
+    }
+
+    /**
+     * Keep existing getTotalVariancePercentage() method for backward compatibility
+     */
+    public function getTotalVariancePercentage(): float
+    {
+        return $this->total_variance_percentage;
+    }
+
     public function getTotalVariance(): float
     {
         return round($this->total_physical_fuel - $this->total_system_fuel, 2);
@@ -268,9 +316,7 @@ class VarianceReport extends Model
             default => 'Poor'
         };
     }
-
-    public function getStorageVariancePercentage(): float
-    {
+}
     public function getStorageVariancePercentage(): float
     {
         $storageSystemTotal = PhysicalStockCheck::where('checkable_type', FuelStorage::class)

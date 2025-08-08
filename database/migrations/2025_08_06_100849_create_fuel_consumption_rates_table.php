@@ -38,13 +38,13 @@ return new class extends Migration
             
             $table->timestamps();
             
-            // Indexes
-            $table->index(['unit_type_id', 'effective_from', 'is_active']);
-            $table->index(['effective_from', 'effective_until']);
-            $table->index(['work_condition', 'is_active']);
+            // MYSQL FIX: Custom shorter index names
+            $table->index(['unit_type_id', 'effective_from', 'is_active'], 'idx_fcr_type_from_active');
+            $table->index(['effective_from', 'effective_until'], 'idx_fcr_period');
+            $table->index(['work_condition', 'is_active'], 'idx_fcr_condition_active');
             
-            // Ensure no overlapping periods for same unit type and condition
-            $table->unique(['unit_type_id', 'work_condition', 'effective_from'], 'unique_rate_period');
+            // MYSQL FIX: Custom shorter unique constraint name
+            $table->unique(['unit_type_id', 'work_condition', 'effective_from'], 'idx_fcr_unique_rate');
         });
     }
 

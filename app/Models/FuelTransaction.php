@@ -19,8 +19,10 @@ class FuelTransaction extends Model
         'fuel_source_id',
         'previous_hour_meter',
         'current_hour_meter',
+        'hour_meter_diff',        // Tambahkan ini jika pakai solusi 2
         'previous_odometer',
         'current_odometer',
+        'odometer_diff',          // Tambahkan ini jika pakai solusi 2
         'fuel_amount',
         'source_level_before',
         'source_level_after',
@@ -109,15 +111,54 @@ class FuelTransaction extends Model
         return "TXN-{$date}-" . str_pad($sequence, 4, '0', STR_PAD_LEFT);
     }
 
-    public function getHourMeterDiff(): float
+    /**
+     * MYSQL FIX: Accessor with fallback
+     * Jika kolom hour_meter_diff ada di DB, gunakan itu
+     * Jika tidak, calculate on-the-fly
+     */
+    public function getHourMeterDiffAttribute($value): float
     {
+        // Jika kolom ada di DB dan sudah diisi, gunakan itu
+        if ($value !== null) {
+            return $value;
+        }
+        
+        // Jika tidak, calculate on-the-fly
         return $this->current_hour_meter - $this->previous_hour_meter;
     }
 
-    public function getOdometerDiff(): float
+    /**
+     * MYSQL FIX: Accessor with fallback
+     * Jika kolom odometer_diff ada di DB, gunakan itu
+     * Jika tidak, calculate on-the-fly
+     */
+    public function getOdometerDiffAttribute($value): float
     {
+        // Jika kolom ada di DB dan sudah diisi, gunakan itu
+        if ($value !== null) {
+            return $value;
+        }
+        
+        // Jika tidak, calculate on-the-fly
         return $this->current_odometer - $this->previous_odometer;
     }
+
+    /**
+     * Keep existing getHourMeterDiff() method for backward compatibility
+     */
+    public function getHourMeterDiff(): float
+    {
+        return $this->hour_meter_diff;
+    }
+
+    /**
+     * Keep existing getOdometerDiff() method for backward compatibility
+     */
+    public function getOdometerDiff(): float
+    {
+        return $this->odometer_diff;
+    }
+    
 
     public function calculateEfficiency(): void
     {
@@ -273,4 +314,7 @@ class FuelTransaction extends Model
         $variance = $this->getConsumptionVariance();
         return $variance !== null && abs($variance) > 15;
     }
+
+
+
 }

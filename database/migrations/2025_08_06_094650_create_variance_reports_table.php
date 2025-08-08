@@ -4,6 +4,10 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
+// ============================================================================
+// 3. FIX: variance_reports_table.php - Virtual columns
+// ============================================================================
+
 return new class extends Migration
 {
     /**
@@ -22,8 +26,7 @@ return new class extends Migration
             // Overall variance summary
             $table->decimal('total_system_fuel', 12, 2)->comment('Total fuel according to system');
             $table->decimal('total_physical_fuel', 12, 2)->comment('Total fuel from physical checks');
-            $table->decimal('total_variance', 12, 2)->storedAs('total_physical_fuel - total_system_fuel');
-            $table->decimal('total_variance_percentage', 8, 4)->storedAs('(total_variance / total_system_fuel) * 100');
+            // MYSQL FIX: Remove computed columns, calculate in model
             
             // Breakdown by source type
             $table->decimal('storage_variance', 10, 2)->default(0);
@@ -44,11 +47,10 @@ return new class extends Migration
             
             $table->timestamps();
             
-            // Indexes
-            $table->index(['report_date', 'report_type']);
-            $table->index(['period_start', 'period_end']);
-            $table->index(['report_status']);
-            $table->index(['total_variance_percentage']);
+            // MYSQL FIX: Custom shorter index names
+            $table->index(['report_date', 'report_type'], 'idx_vr_date_type');
+            $table->index(['period_start', 'period_end'], 'idx_vr_period');
+            $table->index(['report_status'], 'idx_vr_status');
         });
     }
 

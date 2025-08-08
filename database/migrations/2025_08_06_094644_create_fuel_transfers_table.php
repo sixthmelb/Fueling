@@ -27,10 +27,11 @@ return new class extends Migration
             $table->text('notes')->nullable();
             $table->timestamps();
             
-            $table->index(['fuel_storage_id', 'transfer_datetime']);
-            $table->index(['fuel_truck_id', 'transfer_datetime']);
-            $table->index(['daily_session_id']);
-            $table->index(['transfer_datetime']);
+            // MYSQL FIX: Custom shorter index names
+            $table->index(['fuel_storage_id', 'transfer_datetime'], 'idx_ft_storage_datetime');
+            $table->index(['fuel_truck_id', 'transfer_datetime'], 'idx_ft_truck_datetime');
+            $table->index(['daily_session_id'], 'idx_ft_session');
+            $table->index(['transfer_datetime'], 'idx_ft_datetime');
         });
     }
 

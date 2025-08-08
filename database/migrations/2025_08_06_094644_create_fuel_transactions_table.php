@@ -23,11 +23,11 @@ return new class extends Migration
             // Hour Meter & Odometer tracking
             $table->decimal('previous_hour_meter', 10, 2);
             $table->decimal('current_hour_meter', 10, 2);
-            $table->decimal('hour_meter_diff', 10, 2)->storedAs('current_hour_meter - previous_hour_meter');
+            // MYSQL FIX: Remove computed columns for now, calculate in model
             
             $table->decimal('previous_odometer', 10, 2);
             $table->decimal('current_odometer', 10, 2);
-            $table->decimal('odometer_diff', 10, 2)->storedAs('current_odometer - previous_odometer');
+            // MYSQL FIX: Remove computed columns for now, calculate in model
             
             // Fuel transaction details
             $table->decimal('fuel_amount', 8, 2)->comment('Fuel amount in liters');
@@ -47,12 +47,12 @@ return new class extends Migration
             $table->datetime('calculated_at')->nullable();
             $table->timestamps();
             
-            // Indexes for performance
-            $table->index(['unit_id', 'transaction_datetime']);
-            $table->index(['daily_session_id', 'transaction_datetime']);
-            $table->index(['fuel_source_type', 'fuel_source_id', 'transaction_datetime']);
-            $table->index(['transaction_datetime']);
-            $table->index(['unit_id', 'daily_session_id']);
+            // MYSQL FIX: Indexes with custom shorter names (max 64 chars)
+            $table->index(['unit_id', 'transaction_datetime'], 'idx_ft_unit_datetime');
+            $table->index(['daily_session_id', 'transaction_datetime'], 'idx_ft_session_datetime');
+            $table->index(['fuel_source_type', 'fuel_source_id', 'transaction_datetime'], 'idx_ft_source_datetime');
+            $table->index(['transaction_datetime'], 'idx_ft_datetime');
+            $table->index(['unit_id', 'daily_session_id'], 'idx_ft_unit_session');
         });
     }
 
