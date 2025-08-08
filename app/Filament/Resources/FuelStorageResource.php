@@ -250,16 +250,27 @@ class FuelStorageResource extends Resource
                         $oldLevel = $record->current_level;
                         $record->updateLevel($data['new_level']);
                         
-                        // Log the adjustment
-                        activity('fuel_storage_adjustment')
-                            ->performedOn($record)
-                            ->withProperties([
+                        // Proper activity logging dengan custom ActivityLog
+                        \App\Models\ActivityLog::createLog(
+                            'fuel_storage_adjustment',
+                            'Storage level manually adjusted',
+                            $record,
+                            auth()->user(),
+                            [
+                                'storage_code' => $record->storage_code,
                                 'old_level' => $oldLevel,
                                 'new_level' => $data['new_level'],
                                 'difference' => $data['new_level'] - $oldLevel,
                                 'reason' => $data['adjustment_reason']
-                            ])
-                            ->log('Storage level manually adjusted');
+                            ]
+                        );
+                        
+                        // Show success notification
+                        \Filament\Notifications\Notification::make()
+                            ->title('Storage level adjusted successfully')
+                            ->body("Level changed from {$oldLevel}L to {$data['new_level']}L")
+                            ->success()
+                            ->send();
                     })
                     ->visible(fn ($record) => $record->is_active),
                     

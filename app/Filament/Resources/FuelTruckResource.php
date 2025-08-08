@@ -303,16 +303,27 @@ class FuelTruckResource extends Resource
                         $oldLevel = $record->current_level;
                         $record->updateLevel($data['new_level']);
                         
-                        // Log the adjustment
-                        activity('fuel_truck_adjustment')
-                            ->performedOn($record)
-                            ->withProperties([
+                        // Proper activity logging dengan custom ActivityLog
+                        \App\Models\ActivityLog::createLog(
+                            'fuel_truck_adjustment',
+                            'Truck fuel level manually adjusted',
+                            $record,
+                            auth()->user(),
+                            [
+                                'truck_code' => $record->truck_code,
                                 'old_level' => $oldLevel,
                                 'new_level' => $data['new_level'],
                                 'difference' => $data['new_level'] - $oldLevel,
                                 'reason' => $data['adjustment_reason']
-                            ])
-                            ->log('Truck fuel level manually adjusted');
+                            ]
+                        );
+                        
+                        // Show success notification
+                        \Filament\Notifications\Notification::make()
+                            ->title('Truck level adjusted successfully')
+                            ->body("Level changed from {$oldLevel}L to {$data['new_level']}L")
+                            ->success()
+                            ->send();
                     })
                     ->visible(fn ($record) => $record->is_active),
                     
