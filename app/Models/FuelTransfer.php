@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Facades\Log;
 
 class FuelTransfer extends Model
 {
@@ -81,6 +82,14 @@ class FuelTransfer extends Model
         return $query->whereBetween('transfer_datetime', [$fromDate, $toDate]);
     }
 
+    public function scopeSuccessful($query)
+    {
+        return $query->where(function ($q) {
+            $q->whereRaw('ABS(storage_level_after - (storage_level_before - transferred_amount)) <= 0.1')
+              ->whereRaw('ABS(truck_level_after - (truck_level_before + transferred_amount)) <= 0.1');
+        });
+    }
+
     // Helper Methods
     public function generateTransferNumber(): string
     {
@@ -100,34 +109,74 @@ class FuelTransfer extends Model
         return $this->truck_level_after - $this->truck_level_before;
     }
 
-    // Validation Methods
-    public function isValidTransfer(): bool
+    // IMPROVED: Validation Methods with comprehensive checks
+    public function validateTransfer(): array
     {
-        // Check if storage has enough fuel
-        if ($this->storage_level_before < $this->transferred_amount) {
-            return false;
+        $issues = [];
+        
+        // Basic validation
+        if ($this->transferred_amount <= 0) {
+            $issues[] = "Transfer amount must be greater than 0";
         }
-
-        // Check if truck has enough capacity
-        if (($this->truck_level_before + $this->transferred_amount) > $this->fuelTruck->capacity) {
-            return false;
+        
+        // Storage validation
+        if ($this->fuelStorage) {
+            $storageValidation = $this->fuelStorage->validateTransferOut($this->transferred_amount);
+            if (!$storageValidation['valid']) {
+                $issues = array_merge($issues, $storageValidation['issues']);
+            }
+        } else {
+            $issues[] = "Invalid fuel storage";
         }
-
-        // Validate level calculations
-        $expectedStorageAfter = $this->storage_level_before - $this->transferred_amount;
-        $expectedTruckAfter = $this->truck_level_before + $this->transferred_amount;
-
-        if (abs($this->storage_level_after - $expectedStorageAfter) > 0.01) {
-            return false;
+        
+        // Truck validation
+        if ($this->fuelTruck) {
+            $truckValidation = $this->fuelTruck->validateTransferIn($this->transferred_amount);
+            if (!$truckValidation['valid']) {
+                $issues = array_merge($issues, $truckValidation['issues']);
+            }
+        } else {
+            $issues[] = "Invalid fuel truck";
         }
-
-        if (abs($this->truck_level_after - $expectedTruckAfter) > 0.01) {
-            return false;
+        
+        // Fuel type compatibility
+        if ($this->fuelStorage && $this->fuelTruck) {
+            if ($this->fuelStorage->fuel_type !== $this->fuelTruck->fuel_type) {
+                $issues[] = "Fuel type mismatch: Storage ({$this->fuelStorage->fuel_type}) vs Truck ({$this->fuelTruck->fuel_type})";
+            }
         }
-
-        return true;
+        
+        // Level consistency validation (if levels are set)
+        if ($this->storage_level_before !== null && $this->fuelStorage) {
+            $levelDiff = abs($this->storage_level_before - $this->fuelStorage->current_level);
+            if ($levelDiff > 0.1) {
+                $issues[] = "Storage level mismatch: Expected {$this->storage_level_before}L, Current {$this->fuelStorage->current_level}L";
+            }
+        }
+        
+        if ($this->truck_level_before !== null && $this->fuelTruck) {
+            $levelDiff = abs($this->truck_level_before - $this->fuelTruck->current_level);
+            if ($levelDiff > 0.1) {
+                $issues[] = "Truck level mismatch: Expected {$this->truck_level_before}L, Current {$this->fuelTruck->current_level}L";
+            }
+        }
+        
+        return [
+            'valid' => empty($issues),
+            'issues' => $issues,
+            'storage_available' => $this->fuelStorage?->current_level,
+            'truck_capacity' => $this->fuelTruck?->getRemainingCapacity(),
+            'transfer_amount' => $this->transferred_amount
+        ];
     }
 
+    public function isValidTransfer(): bool
+    {
+        $validation = $this->validateTransfer();
+        return $validation['valid'];
+    }
+
+    // IMPROVED: Transfer efficiency calculation with detailed analysis
     public function getTransferEfficiency(): float
     {
         // Calculate efficiency based on expected vs actual levels
@@ -138,9 +187,141 @@ class FuelTransfer extends Model
         $truckVariance = abs($this->truck_level_after - $expectedTruckLevel);
         
         $totalVariance = $storageVariance + $truckVariance;
+        
+        if ($this->transferred_amount == 0) {
+            return 0;
+        }
+        
         $efficiency = max(0, 100 - (($totalVariance / $this->transferred_amount) * 100));
         
         return round($efficiency, 2);
+    }
+
+    public function getDetailedEfficiencyAnalysis(): array
+    {
+        $expectedStorageAfter = $this->storage_level_before - $this->transferred_amount;
+        $expectedTruckAfter = $this->truck_level_before + $this->transferred_amount;
+        
+        $storageVariance = $this->storage_level_after - $expectedStorageAfter;
+        $truckVariance = $this->truck_level_after - $expectedTruckAfter;
+        
+        return [
+            'transfer_amount' => $this->transferred_amount,
+            'storage' => [
+                'before' => $this->storage_level_before,
+                'after' => $this->storage_level_after,
+                'expected_after' => $expectedStorageAfter,
+                'variance' => $storageVariance,
+                'variance_percentage' => $this->transferred_amount > 0 
+                    ? round(($storageVariance / $this->transferred_amount) * 100, 2) 
+                    : 0
+            ],
+            'truck' => [
+                'before' => $this->truck_level_before,
+                'after' => $this->truck_level_after,
+                'expected_after' => $expectedTruckAfter,
+                'variance' => $truckVariance,
+                'variance_percentage' => $this->transferred_amount > 0 
+                    ? round(($truckVariance / $this->transferred_amount) * 100, 2) 
+                    : 0
+            ],
+            'overall' => [
+                'total_variance' => abs($storageVariance) + abs($truckVariance),
+                'efficiency' => $this->getTransferEfficiency(),
+                'status' => $this->getEfficiencyStatus()
+            ]
+        ];
+    }
+
+    public function getEfficiencyStatus(): string
+    {
+        $efficiency = $this->getTransferEfficiency();
+        
+        return match (true) {
+            $efficiency >= 99 => 'Excellent',
+            $efficiency >= 95 => 'Good',
+            $efficiency >= 90 => 'Fair',
+            $efficiency >= 80 => 'Poor',
+            default => 'Very Poor'
+        };
+    }
+
+    // Loss/Gain Analysis
+    public function getFuelLossGain(): array
+    {
+        $storageChange = $this->getStorageLevelChange();
+        $truckChange = $this->getTruckLevelChange();
+        
+        $expectedStorageChange = -$this->transferred_amount;
+        $expectedTruckChange = $this->transferred_amount;
+        
+        $storageLossGain = $storageChange - $expectedStorageChange;
+        $truckLossGain = $truckChange - $expectedTruckChange;
+        
+        $totalLossGain = $storageLossGain + $truckLossGain;
+        
+        return [
+            'storage_loss_gain' => round($storageLossGain, 2),
+            'truck_loss_gain' => round($truckLossGain, 2),
+            'total_loss_gain' => round($totalLossGain, 2),
+            'percentage' => $this->transferred_amount > 0 
+                ? round(($totalLossGain / $this->transferred_amount) * 100, 2) 
+                : 0,
+            'status' => $this->getLossGainStatus($totalLossGain)
+        ];
+    }
+
+    private function getLossGainStatus(float $lossGain): string
+    {
+        $absLossGain = abs($lossGain);
+        
+        if ($absLossGain <= 0.1) {
+            return 'Perfect';
+        } elseif ($absLossGain <= 1) {
+            return 'Excellent';
+        } elseif ($absLossGain <= 5) {
+            return 'Good';
+        } elseif ($absLossGain <= 10) {
+            return 'Fair';
+        } else {
+            return 'Poor';
+        }
+    }
+
+    // Quality Assurance Methods
+    public function hasSignificantVariance(): bool
+    {
+        $analysis = $this->getDetailedEfficiencyAnalysis();
+        $storageVariance = abs($analysis['storage']['variance']);
+        $truckVariance = abs($analysis['truck']['variance']);
+        
+        return $storageVariance > 5 || $truckVariance > 5;
+    }
+
+    public function requiresInvestigation(): bool
+    {
+        return $this->getTransferEfficiency() < 90 || $this->hasSignificantVariance();
+    }
+
+    public function getQualityScore(): float
+    {
+        $efficiency = $this->getTransferEfficiency();
+        $lossGain = $this->getFuelLossGain();
+        $validation = $this->validateTransfer();
+        
+        $score = $efficiency;
+        
+        // Penalty for validation issues
+        if (!$validation['valid']) {
+            $score -= count($validation['issues']) * 5;
+        }
+        
+        // Penalty for significant loss/gain
+        if (abs($lossGain['percentage']) > 2) {
+            $score -= abs($lossGain['percentage']);
+        }
+        
+        return max(0, min(100, round($score, 2)));
     }
 
     // Attributes
@@ -156,17 +337,7 @@ class FuelTransfer extends Model
 
     public function getEfficiencyStatusAttribute(): string
     {
-        $efficiency = $this->getTransferEfficiency();
-        
-        if ($efficiency >= 99) {
-            return 'Excellent';
-        } elseif ($efficiency >= 95) {
-            return 'Good';
-        } elseif ($efficiency >= 90) {
-            return 'Fair';
-        } else {
-            return 'Poor';
-        }
+        return $this->getEfficiencyStatus();
     }
 
     public function getEfficiencyColorAttribute(): string
@@ -176,6 +347,7 @@ class FuelTransfer extends Model
             'Good' => 'primary',
             'Fair' => 'warning',
             'Poor' => 'danger',
+            'Very Poor' => 'danger',
             default => 'secondary'
         };
     }
@@ -183,5 +355,60 @@ class FuelTransfer extends Model
     public function getFormattedDateTimeAttribute(): string
     {
         return $this->transfer_datetime->format('d/m/Y H:i');
+    }
+
+    public function getTransferDetailsAttribute(): array
+    {
+        return [
+            'transfer_number' => $this->transfer_number,
+            'from_storage' => $this->fuelStorage->display_name,
+            'to_truck' => $this->fuelTruck->display_name,
+            'amount' => $this->transferred_amount,
+            'operator' => $this->operator_name,
+            'datetime' => $this->formatted_date_time,
+            'efficiency' => $this->getTransferEfficiency(),
+            'status' => $this->efficiency_status,
+            'quality_score' => $this->getQualityScore()
+        ];
+    }
+
+    public function getStorageInfoAttribute(): array
+    {
+        return [
+            'code' => $this->fuelStorage->storage_code,
+            'name' => $this->fuelStorage->storage_name,
+            'before' => $this->storage_level_before,
+            'after' => $this->storage_level_after,
+            'change' => $this->getStorageLevelChange(),
+            'expected_change' => -$this->transferred_amount
+        ];
+    }
+
+    public function getTruckInfoAttribute(): array
+    {
+        return [
+            'code' => $this->fuelTruck->truck_code,
+            'name' => $this->fuelTruck->truck_name,
+            'before' => $this->truck_level_before,
+            'after' => $this->truck_level_after,
+            'change' => $this->getTruckLevelChange(),
+            'expected_change' => $this->transferred_amount
+        ];
+    }
+
+    public function getCanBeModifiedAttribute(): bool
+    {
+        // Can be modified if session is still active
+        return $this->dailySession?->canBeModified() ?? true;
+    }
+
+    public function getAgeInHoursAttribute(): float
+    {
+        return $this->transfer_datetime->diffInHours(now(), false);
+    }
+
+    public function getIsRecentAttribute(): bool
+    {
+        return $this->age_in_hours <= 24;
     }
 }
